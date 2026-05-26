@@ -1,1 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>高级手势交互雪花系统</title>
+    <!-- 引入 MediaPipe 和 Three.js -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
+        #video-container { position: fixed; width: 100vw; height: 100vh; transform: scaleX(-1); }
+        #webcam { width: 100%; height: 100%; object-fit: cover; opacity: 0.4; } /* 背景低透明度 */
+        #canvas-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; }
+        .loading { position: fixed; color: white; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 10; }
+    </style>
+</head>
+<body>
 
+<div id="video-container">
+    <video id="webcam" autoplay playsinline></video>
+</div>
+<canvas id="canvas-overlay"></canvas>
+<div id="loading" class="loading">正在启动摄像头及AI模型...</div>
+
+<script>
+const videoElement = document.getElementById('webcam');
+const canvasElement = document.getElementById('canvas-overlay');
+const ctx = canvasElement.getContext('2d');
+const loadingLabel = document.getElementById('loading');
+
+let width, height;
+let snowflakes = [];
+let fingerPos = { x: -100, y: -100, active: false };
+const SNOWFLAKE_COUNT = 150; // 密集度
+
+// 1. 初始化画布尺寸
+function resize() {
+    width = window.innerWidth;
+    height = window.innerHeight;
+    canvasElement.width = width;
+    canvasElement.height = height;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// 2. 雪花粒子类
+class Snowflake {
+    constructor() {
+        this.reset();
+    }
+    reset() {
+        this.x = Math.random() * width;
+        this.y = Math.random() * -height;
+        this.size = Math.random() * 3 + 2;
+        this.speedY = Math.random() * 5 + 5; // 下落速度快
+        this.speedX = (Math.random() - 0.5) * 2;
+        this.vx = 0; // 交互产生的额外速度
+        this.vy = 0;
+        this.friction = 0.95; // 阻力系数
+    }
+    update() {
+        // 基础重力与速度
+        this.x += this.speedX + this.vx;
+        this.y += this.speedY + this.vy;
+
+        // 应用阻力使弹开后的速度逐渐消失
+        this.vx *= this.friction;
+        this.vy *= this.friction;
+
+        // 手势碰撞检测 (食指指尖)
+        if (fingerPos.active) {
+            const dx = this.x - fingerPos.x;
+            const dy = this.y - fingerPos.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            const forceDist = 80; // 触碰感应范围
+
+            if (distance < forceDist) {
+                const angle = Math.atan2(dy, dx);
+                const force = (forceDist - distance) / forceDist;
+                // 产生向外的推力
+                this.vx += Math.cos(angle) * force * 15; 
+                this.vy += Math.sin(angle) * force * 15;
+            }
+        }
+
+        // 越界重置
+        if (this.y > height) this.reset();
+        if (this.x < 0 || this.x > width) this.x = (this.x + width) % width;
+    }
+    draw() {
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = "white";
+        ctx.fill();
+    }
+}
+
+// 初始化雪花池
+for (let i = 0; i < SNOWFLAKE_COUNT; i++) {
+    snowflakes.push(new Snowflake());
+}
+
+// 3. MediaPipe 手势识别逻辑
+const hands = new Hands({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+    maxNumHands: 1,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.7,
+    minTrackingConfidence: 0.7
+});
+
+hands.onResults((results) => {
+    loadingLabel.style.display = 'none';
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        const hand = results.multiHandLandmarks[0];
+        // 8 号点是食指指尖 (INDEX_FINGER_TIP)
+        const tip = hand[8];
+        // 转换坐标并镜像处理（因为摄像头是镜像的）
+        fingerPos.x = (1 - tip.x) * width; 
+        fingerPos.y = tip.y * height;
+        fingerPos.active = true;
+    } else {
+        fingerPos.active = false;
+    }
+});
+
+// 4. 动画主循环
+function animate() {
+    ctx.clearRect(0, 0, width, height);
+    
+    snowflakes.forEach(s => {
+        s.update();
+        s.draw();
+    });
+
+    // 绘制食指焦点（可选，用于反馈）
+    if (fingerPos.active) {
+        ctx.beginPath();
+        ctx.arc(fingerPos.x, fingerPos.y, 15, 0, Math.PI * 2);
+        ctx.strokeStyle = "rgba(0, 255, 255, 0.5)";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    }
+
+    requestAnimationFrame(animate);
+}
+
+// 5. 启动相机
+const camera = new Camera(videoElement, {
+    onFrame: async () => {
+        await hands.send({image: videoElement});
+    },
+    width: 1280,
+    height: 720
+});
+camera.start();
+animate();
+
+</script>
+</body>
+</html>
