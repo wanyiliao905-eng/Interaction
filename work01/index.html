@@ -1,1 +1,577 @@
-<h1>work02</h1>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0, touch-action: manipulation, viewport-fit=cover">
+  <title>钻石琴弦 · 流光竖琴</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #ffffff;
+      font-family: 'Inter', 'Helvetica Neue', system-ui, sans-serif;
+      touch-action: none;
+    }
+    canvas {
+      display: block;
+      background: #ffffff;
+      width: 100%;
+      height: 100%;
+    }
+    .guide {
+      position: absolute;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #a0a0a0;
+      font-size: 13px;
+      letter-spacing: 0.5px;
+      background: rgba(255,255,255,0.75);
+      backdrop-filter: blur(8px);
+      padding: 8px 22px;
+      border-radius: 30px;
+      pointer-events: none;
+      white-space: nowrap;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.03);
+      font-weight: 400;
+    }
+    @media (max-width: 600px) {
+      .guide {
+        font-size: 11px;
+        bottom: 18px;
+        padding: 6px 18px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="guide">🎵 拨动钻石或琴弦 · 每根弦音高不同</div>
+
+  <script>
+    (function() {
+      // ==================== 吉他琴弦式音效系统 ====================
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      document.body.appendChild(canvas);
+
+      // 音频引擎
+      let audioCtx = null;
+      let isAudioReady = false;
+
+      // 音符频率映射：6根弦对应不同调式 (基于A大调/五声音阶，明亮悦耳)
+      const STRING_TUNING = [
+        { note: 'E4', freq: 329.63, color: [255, 140, 160] }, // 柔粉 - 高音E
+        { note: 'B3', freq: 246.94, color: [100, 180, 255] }, // 天蓝 - B
+        { note: 'G3', freq: 196.00, color: [180, 130, 255] }, // 淡紫 - G
+        { note: 'D3', freq: 146.83, color: [255, 200, 100] }, // 香槟金 - D
+        { note: 'A2', freq: 110.00, color: [80, 210, 210] },  // 薄荷青 - A
+        { note: 'E2', freq: 82.41, color: [140, 210, 120] }   // 草绿 - 低音E
+      ];
+
+      function initAudioContext() {
+        if (isAudioReady) return;
+        try {
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          // 创建静音缓冲区并播放以解锁音频
+          const silentBuffer = audioCtx.createBuffer(1, 1, 22050);
+          const source = audioCtx.createBufferSource();
+          source.buffer = silentBuffer;
+          source.connect(audioCtx.destination);
+          source.start(0);
+          isAudioReady = true;
+          console.log('🎸 吉他琴弦音效系统已激活');
+        } catch (e) {
+          console.warn('音频初始化失败', e);
+        }
+      }
+
+      /**
+       * 模拟吉他拨弦音色
+       * @param {number} freq - 基频 (Hz)
+       * @param {number} velocity - 力度 0-1 (影响音量和亮度)
+       * @param {number} strandIndex - 弦索引，用于微调音色
+       */
+      function playGuitarString(freq, velocity = 0.5, strandIndex = 0) {
+        if (!audioCtx || !isAudioReady) return;
+        try {
+          const now = audioCtx.currentTime;
+          const duration = 0.9 + velocity * 0.5; // 力度大延音稍长
+          
+          // 创建增益节点 (音量包络)
+          const masterGain = audioCtx.createGain();
+          masterGain.gain.setValueAtTime(0, now);
+          // 快速起音，模拟拨弦
+          masterGain.gain.linearRampToValueAtTime(Math.min(0.25, velocity * 0.4), now + 0.008);
+          // 衰减
+          masterGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+          
+          // 主音色：使用三角波 + 轻微方波混合，产生类似尼龙弦质感
+          const osc1 = audioCtx.createOscillator();
+          const osc2 = audioCtx.createOscillator();
+          
+          osc1.type = 'triangle';
+          osc2.type = 'sine';
+          
+          osc1.frequency.setValueAtTime(freq, now);
+          osc2.frequency.setValueAtTime(freq * 2.0, now); // 二次谐波
+          
+          // 根据弦的粗细(索引)调整泛音：低音弦更浑厚
+          const harmonicGain = audioCtx.createGain();
+          harmonicGain.gain.setValueAtTime(0.08 + (strandIndex * 0.02), now);
+          
+          // 噪音层：模拟拨弦瞬间的指甲触弦声
+          const noiseBuffer = createNoiseBuffer(0.05);
+          const noiseSource = audioCtx.createBufferSource();
+          noiseSource.buffer = noiseBuffer;
+          const noiseGain = audioCtx.createGain();
+          noiseGain.gain.setValueAtTime(velocity * 0.15, now);
+          noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
+          
+          // 滤波：让音色更温暖
+          const filter = audioCtx.createBiquadFilter();
+          filter.type = 'lowpass';
+          filter.frequency.setValueAtTime(3000 + freq * 0.8, now);
+          filter.Q.setValueAtTime(1.5, now);
+          
+          // 连接节点
+          osc1.connect(filter);
+          osc2.connect(harmonicGain);
+          harmonicGain.connect(filter);
+          filter.connect(masterGain);
+          
+          noiseSource.connect(noiseGain);
+          noiseGain.connect(masterGain);
+          
+          masterGain.connect(audioCtx.destination);
+          
+          // 启动并停止
+          osc1.start(now);
+          osc2.start(now);
+          noiseSource.start(now);
+          
+          osc1.stop(now + duration + 0.1);
+          osc2.stop(now + duration + 0.1);
+          noiseSource.stop(now + 0.05);
+          
+        } catch (e) {
+          // 静默处理
+        }
+      }
+      
+      // 生成短噪音缓冲
+      function createNoiseBuffer(durationSec) {
+        const sampleRate = audioCtx ? audioCtx.sampleRate : 44100;
+        const length = Math.floor(sampleRate * durationSec);
+        const buffer = audioCtx.createBuffer(1, length, sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < length; i++) {
+          data[i] = (Math.random() * 2 - 1) * 0.7;
+        }
+        return buffer;
+      }
+
+      // -------------------- 画布与物理世界 --------------------
+      let width, height;
+      
+      const STRAND_COUNT = 6;            // 6根弦，对应吉他调音
+      const DIAMOND_BASE_COUNT = 7;      // 每串基础数量，实际长短不一
+      
+      const GRAVITY = 0.12;
+      const DAMPING = 0.9;
+      const SPRING_STIFFNESS = 0.032;
+      const MAX_DRAG_DISTANCE = 140;
+      
+      let diamonds = [];
+      
+      // 交互状态
+      let isDragging = false;
+      let draggedDiamond = null;
+      let dragStartMouse = { x: 0, y: 0 };
+      let dragStartDiamondPos = { x: 0, y: 0 };
+      
+      let mouseX = 0, mouseY = 0;
+      let hoveredStrandIndex = -1;       // 悬停在哪个弦上
+      let hoveredLineInfo = null;
+
+      // 钻石类
+      class Diamond {
+        constructor(id, baseX, baseY, color, strandIndex, noteFreq) {
+          this.id = id;
+          this.baseX = baseX;
+          this.baseY = baseY;
+          this.x = baseX;
+          this.y = baseY;
+          this.vx = 0;
+          this.vy = 0;
+          this.color = color;
+          this.strandIndex = strandIndex;
+          this.noteFreq = noteFreq;      // 所属弦的频率
+          this.radius = 13;
+          this.isDragged = false;
+        }
+        
+        update() {
+          if (this.isDragged) {
+            this.vx = 0;
+            this.vy = 0;
+            return;
+          }
+          
+          const dx = this.baseX - this.x;
+          const dy = this.baseY - this.y;
+          this.vx += dx * SPRING_STIFFNESS;
+          this.vy += dy * SPRING_STIFFNESS;
+          
+          this.x += this.vx;
+          this.y += this.vy;
+          
+          this.vx *= DAMPING;
+          this.vy *= DAMPING;
+          
+          const offsetX = this.x - this.baseX;
+          const offsetY = this.y - this.baseY;
+          const dist = Math.sqrt(offsetX*offsetX + offsetY*offsetY);
+          if (dist > MAX_DRAG_DISTANCE) {
+            const angle = Math.atan2(offsetY, offsetX);
+            this.x = this.baseX + Math.cos(angle) * MAX_DRAG_DISTANCE;
+            this.y = this.baseY + Math.sin(angle) * MAX_DRAG_DISTANCE;
+            this.vx *= 0.7;
+            this.vy *= 0.7;
+          }
+        }
+        
+        draw(ctx) {
+          ctx.save();
+          ctx.translate(this.x, this.y);
+          const w = this.radius * 1.2;
+          const h = this.radius * 1.9;
+          
+          const [r, g, b] = this.color;
+          const gradient = ctx.createLinearGradient(-w, -h, w, h);
+          gradient.addColorStop(0, `rgba(${r},${g},${b},0.95)`);
+          gradient.addColorStop(0.5, `rgba(${Math.min(255,r+45)},${Math.min(255,g+45)},${Math.min(255,b+45)},1)`);
+          gradient.addColorStop(1, `rgba(${Math.max(0,r-25)},${Math.max(0,g-25)},${Math.max(0,b-25)},0.9)`);
+          
+          ctx.beginPath();
+          ctx.moveTo(0, -h);
+          ctx.lineTo(w, 0);
+          ctx.lineTo(0, h);
+          ctx.lineTo(-w, 0);
+          ctx.closePath();
+          ctx.fillStyle = gradient;
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+          ctx.lineWidth = 1.3;
+          ctx.stroke();
+          
+          // 内部光泽
+          ctx.beginPath();
+          ctx.moveTo(0, -h*0.7);
+          ctx.lineTo(w*0.5, 0);
+          ctx.lineTo(0, h*0.7);
+          ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+          ctx.lineWidth = 0.9;
+          ctx.stroke();
+          
+          ctx.beginPath();
+          ctx.arc(0, 0, this.radius*0.25, 0, Math.PI*2);
+          ctx.fillStyle = 'rgba(255,255,255,0.95)';
+          ctx.fill();
+          
+          ctx.restore();
+        }
+      }
+
+      // 初始化钻石串 (每串长度随机6-8颗)
+      function createDiamonds() {
+        diamonds = [];
+        const margin = width * 0.08;
+        const usableWidth = width - margin * 2;
+        const strandSpacing = usableWidth / (STRAND_COUNT - 1);
+        
+        for (let s = 0; s < STRAND_COUNT; s++) {
+          const strandX = margin + s * strandSpacing;
+          const count = DIAMOND_BASE_COUNT + Math.floor(Math.random() * 3) - 1; // 6,7,8
+          const tuning = STRING_TUNING[s];
+          const color = tuning.color;
+          const freq = tuning.freq;
+          
+          const startY = height * 0.1;
+          const verticalSpacing = (height * 0.7) / (count - 1);
+          
+          for (let i = 0; i < count; i++) {
+            const baseY = startY + i * verticalSpacing;
+            const offsetX = (Math.random() - 0.5) * 6;
+            diamonds.push(new Diamond(
+              `d_${s}_${i}`,
+              strandX + offsetX,
+              baseY,
+              color,
+              s,
+              freq
+            ));
+          }
+        }
+      }
+
+      // 绘制琴弦线
+      function drawStrings() {
+        const strands = {};
+        diamonds.forEach(d => {
+          if (!strands[d.strandIndex]) strands[d.strandIndex] = [];
+          strands[d.strandIndex].push(d);
+        });
+        
+        for (let s = 0; s < STRAND_COUNT; s++) {
+          const strandDiamonds = (strands[s] || []).sort((a, b) => a.baseY - b.baseY);
+          if (strandDiamonds.length < 2) continue;
+          
+          for (let i = 0; i < strandDiamonds.length - 1; i++) {
+            const d1 = strandDiamonds[i];
+            const d2 = strandDiamonds[i+1];
+            
+            const isHovered = hoveredStrandIndex === s || 
+                              (hoveredLineInfo && hoveredLineInfo.strandIndex === s &&
+                               ((hoveredLineInfo.from === d1 && hoveredLineInfo.to === d2) ||
+                                (hoveredLineInfo.from === d2 && hoveredLineInfo.to === d1)));
+            
+            ctx.beginPath();
+            ctx.moveTo(d1.x, d1.y);
+            ctx.lineTo(d2.x, d2.y);
+            
+            if (isHovered) {
+              ctx.strokeStyle = '#707070';
+              ctx.lineWidth = 2.4;
+            } else {
+              ctx.strokeStyle = '#c8c8c8';
+              ctx.lineWidth = 1.9;
+            }
+            ctx.stroke();
+            
+            // 细线高光
+            ctx.beginPath();
+            ctx.moveTo(d1.x, d1.y + 0.6);
+            ctx.lineTo(d2.x, d2.y + 0.6);
+            ctx.strokeStyle = 'rgba(240,240,240,0.8)';
+            ctx.lineWidth = 0.9;
+            ctx.stroke();
+          }
+        }
+      }
+
+      function getDiamondAt(px, py) {
+        for (let i = diamonds.length - 1; i >= 0; i--) {
+          const d = diamonds[i];
+          if (Math.hypot(px - d.x, py - d.y) < d.radius * 1.5) return d;
+        }
+        return null;
+      }
+
+      function getLineNear(px, py, threshold = 14) {
+        const strands = {};
+        diamonds.forEach(d => {
+          if (!strands[d.strandIndex]) strands[d.strandIndex] = [];
+          strands[d.strandIndex].push(d);
+        });
+        for (let key in strands) {
+          const arr = strands[key].sort((a,b)=> a.baseY - b.baseY);
+          for (let i = 0; i < arr.length-1; i++) {
+            const a = arr[i], b = arr[i+1];
+            const dist = distToSegment(px, py, a.x, a.y, b.x, b.y);
+            if (dist < threshold) return { strandIndex: a.strandIndex, from: a, to: b };
+          }
+        }
+        return null;
+      }
+      
+      function distToSegment(px, py, x1, y1, x2, y2) {
+        const dx = x2-x1, dy = y2-y1;
+        const lenSq = dx*dx+dy*dy;
+        if (lenSq === 0) return Math.hypot(px-x1, py-y1);
+        let t = ((px-x1)*dx + (py-y1)*dy) / lenSq;
+        t = Math.max(0, Math.min(1, t));
+        return Math.hypot(px - (x1+t*dx), py - (y1+t*dy));
+      }
+
+      // 事件处理
+      function handleStart(e) {
+        e.preventDefault();
+        initAudioContext();
+        
+        const pt = getCanvasPoint(e);
+        if (!pt) return;
+        mouseX = pt.x; mouseY = pt.y;
+        
+        const diamond = getDiamondAt(pt.x, pt.y);
+        if (diamond) {
+          startDrag(diamond, pt);
+          return;
+        }
+        
+        const line = getLineNear(pt.x, pt.y);
+        if (line) {
+          const d = (Math.hypot(pt.x-line.from.x, pt.y-line.from.y) < Math.hypot(pt.x-line.to.x, pt.y-line.to.y)) ? line.from : line.to;
+          startDrag(d, pt);
+        }
+      }
+      
+      function startDrag(diamond, point) {
+        isDragging = true;
+        draggedDiamond = diamond;
+        diamond.isDragged = true;
+        dragStartMouse.x = point.x;
+        dragStartMouse.y = point.y;
+        dragStartDiamondPos.x = diamond.x;
+        dragStartDiamondPos.y = diamond.y;
+        hoveredLineInfo = null;
+        hoveredStrandIndex = diamond.strandIndex;
+        
+        // 拨动瞬间播放琴弦音
+        playGuitarString(diamond.noteFreq, 0.65, diamond.strandIndex);
+      }
+
+      function handleMove(e) {
+        e.preventDefault();
+        const pt = getCanvasPoint(e);
+        if (!pt) return;
+        mouseX = pt.x; mouseY = pt.y;
+        
+        if (isDragging && draggedDiamond) {
+          let newX = dragStartDiamondPos.x + (pt.x - dragStartMouse.x);
+          let newY = dragStartDiamondPos.y + (pt.y - dragStartMouse.y);
+          
+          const offX = newX - draggedDiamond.baseX;
+          const offY = newY - draggedDiamond.baseY;
+          const dist = Math.sqrt(offX*offX+offY*offY);
+          if (dist > MAX_DRAG_DISTANCE) {
+            const ang = Math.atan2(offY, offX);
+            newX = draggedDiamond.baseX + Math.cos(ang)*MAX_DRAG_DISTANCE;
+            newY = draggedDiamond.baseY + Math.sin(ang)*MAX_DRAG_DISTANCE;
+          }
+          draggedDiamond.x = newX;
+          draggedDiamond.y = newY;
+          
+          // 拖动过程中偶尔产生泛音 (根据移动速度)
+          if (Math.random() < 0.25 && Math.hypot(draggedDiamond.vx, draggedDiamond.vy) > 1.2) {
+            playGuitarString(draggedDiamond.noteFreq, 0.25, draggedDiamond.strandIndex);
+          }
+        } else {
+          hoveredLineInfo = getLineNear(pt.x, pt.y);
+          hoveredStrandIndex = hoveredLineInfo ? hoveredLineInfo.strandIndex : -1;
+        }
+      }
+
+      function handleEnd(e) {
+        e.preventDefault();
+        if (isDragging && draggedDiamond) {
+          // 松手时根据速度再次触发琴弦音 (模拟释放弹响)
+          const speed = Math.hypot(draggedDiamond.vx, draggedDiamond.vy);
+          if (speed > 1.0) {
+            playGuitarString(draggedDiamond.noteFreq, Math.min(0.7, speed * 0.12), draggedDiamond.strandIndex);
+          }
+          draggedDiamond.isDragged = false;
+          isDragging = false;
+          draggedDiamond = null;
+        }
+        hoveredLineInfo = null;
+        hoveredStrandIndex = -1;
+      }
+
+      function getCanvasPoint(e) {
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        const rect = canvas.getBoundingClientRect();
+        if (!rect.width || !rect.height) return null;
+        return {
+          x: (clientX - rect.left) * (width / rect.width),
+          y: (clientY - rect.top) * (height / rect.height)
+        };
+      }
+
+      function update() {
+        diamonds.forEach(d => d.update());
+      }
+
+      function draw() {
+        ctx.clearRect(0, 0, width, height);
+        drawStrings();
+        diamonds.forEach(d => d.draw(ctx));
+        
+        if (hoveredStrandIndex >= 0 && !isDragging) {
+          // 显示当前悬停的弦高亮提示
+          const strandDiamonds = diamonds.filter(d => d.strandIndex === hoveredStrandIndex);
+          if (strandDiamonds.length > 0) {
+            const avgX = strandDiamonds.reduce((s,d)=> s+d.x,0)/strandDiamonds.length;
+            const topY = Math.min(...strandDiamonds.map(d=>d.y));
+            ctx.beginPath();
+            ctx.arc(avgX, topY-18, 6, 0, Math.PI*2);
+            ctx.fillStyle = 'rgba(100,100,100,0.25)';
+            ctx.fill();
+          }
+        }
+      }
+
+      function animationLoop() {
+        update();
+        draw();
+        requestAnimationFrame(animationLoop);
+      }
+
+      function resizeCanvas() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+        if (diamonds.length > 0) {
+          const old = [...diamonds];
+          diamonds = [];
+          const margin = width * 0.08;
+          const spacing = (width - margin*2) / (STRAND_COUNT-1);
+          const strandsMap = {};
+          old.forEach(d => {
+            if (!strandsMap[d.strandIndex]) strandsMap[d.strandIndex] = [];
+            strandsMap[d.strandIndex].push(d);
+          });
+          for (let s=0; s<STRAND_COUNT; s++) {
+            const arr = strandsMap[s] || [];
+            const count = arr.length || DIAMOND_BASE_COUNT;
+            const color = arr[0]?.color || STRING_TUNING[s].color;
+            const freq = arr[0]?.noteFreq || STRING_TUNING[s].freq;
+            const xPos = margin + s * spacing;
+            const startY = height * 0.1;
+            const vSpacing = (height*0.7)/(count-1);
+            for (let i=0; i<count; i++) {
+              diamonds.push(new Diamond(`d_${s}_${i}`, xPos+(Math.random()-0.5)*6, startY+i*vSpacing, color, s, freq));
+            }
+          }
+        } else {
+          createDiamonds();
+        }
+      }
+
+      function bindEvents() {
+        canvas.addEventListener('mousedown', handleStart);
+        window.addEventListener('mousemove', handleMove);
+        window.addEventListener('mouseup', handleEnd);
+        canvas.addEventListener('touchstart', handleStart, {passive: false});
+        canvas.addEventListener('touchmove', handleMove, {passive: false});
+        canvas.addEventListener('touchend', handleEnd);
+        canvas.addEventListener('touchcancel', handleEnd);
+        window.addEventListener('mouseleave', () => {
+          if (isDragging) handleEnd({preventDefault:()=>{}});
+        });
+      }
+
+      resizeCanvas();
+      bindEvents();
+      window.addEventListener('resize', resizeCanvas);
+      createDiamonds();
+      animationLoop();
+      
+      document.body.addEventListener('click', initAudioContext, {once: true});
+      document.body.addEventListener('touchstart', initAudioContext, {once: true});
+    })();
+  </script>
+</body>
+</html>
