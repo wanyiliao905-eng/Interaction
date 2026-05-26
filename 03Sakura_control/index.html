@@ -1,1 +1,549 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>樱花落 ‧ 双手协奏交互系统</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
 
+        /* 隐藏原生视频，由 Canvas 镜像重绘 */
+        #webcam {
+            display: none;
+        }
+
+        /* 核心画布 */
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        /* 极简高级感启动层 */
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            background: linear-gradient(135deg, #1a1015 0%, #0d080b 100%);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            transition: opacity 1.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .title-container {
+            text-align: center;
+            margin-bottom: 40px;
+            opacity: 0;
+            transform: translateY(20px);
+            animation: fadeInUp 1.5s forwards 0.3s;
+        }
+
+        h1 {
+            color: #fff;
+            font-size: 26px;
+            font-weight: 300;
+            letter-spacing: 6px;
+            margin-bottom: 12px;
+            text-shadow: 0 0 20px rgba(255, 183, 197, 0.4);
+        }
+
+        p {
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 12px;
+            letter-spacing: 2px;
+        }
+
+        .start-btn {
+            background: transparent;
+            border: 1px solid rgba(255, 183, 197, 0.4);
+            color: #fff;
+            padding: 14px 36px;
+            font-size: 14px;
+            letter-spacing: 4px;
+            border-radius: 30px;
+            cursor: pointer;
+            outline: none;
+            transition: all 0.4s ease;
+            box-shadow: 0 0 15px rgba(255, 183, 197, 0.1);
+            opacity: 0;
+            animation: fadeIn 1.5s forwards 0.8s;
+        }
+
+        .start-btn:active {
+            transform: scale(0.96);
+            background: rgba(255, 183, 197, 0.15);
+            border-color: rgba(255, 183, 197, 0.8);
+            box-shadow: 0 0 25px rgba(255, 183, 197, 0.3);
+        }
+
+        /* 顶部小巧状态栏 */
+        #status-bar {
+            position: absolute;
+            top: max(20px, env(safe-area-inset-top));
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 5;
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 11px;
+            letter-spacing: 1.5px;
+            background: rgba(0, 0, 0, 0.3);
+            padding: 6px 16px;
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.5s ease;
+            text-align: center;
+            white-space: nowrap;
+        }
+
+        .loader {
+            width: 24px;
+            height: 24px;
+            border: 2px solid rgba(255, 183, 197, 0.2);
+            border-top-color: #ffb7c5;
+            border-radius: 50%;
+            animation: spin 1s infinite linear;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        @keyframes fadeInUp { to { opacity: 1; transform: translateY(0); } }
+        @keyframes fadeIn { to { opacity: 1; } }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="overlay">
+        <div class="loader" id="loader"></div>
+        <div class="title-container">
+            <h1>樱花落 ‧ 双手协奏</h1>
+            <p>单手控时空 ‧ 另一手落樱戏瓣</p>
+        </div>
+        <button class="start-btn" id="startBtn" onclick="initSystem()">开启沉浸体验</button>
+    </div>
+
+    <div id="status-bar">系统初始化中...</div>
+
+    <canvas id="canvas"></canvas>
+    <video id="webcam" autoplay playsinline muted></video>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const video = document.getElementById('webcam');
+        const overlay = document.getElementById('overlay');
+        const startBtn = document.getElementById('startBtn');
+        const loader = document.getElementById('loader');
+        const statusBar = document.getElementById('status-bar');
+
+        let hands, camera, audioCtx, bgmGain;
+        
+        // 全局核心状态
+        let isPaused = false; 
+        
+        // 升级为双手独立追踪数组（最多支持2只手）
+        let activeFingers = [
+            { x: -1000, y: -1000, lastX: -1000, lastY: -1000, vx: 0, vy: 0, isActive: false }, // 第一只手食指
+            { x: -1000, y: -1000, lastX: -1000, lastY: -1000, vx: 0, vy: 0, isActive: false }  // 第二只手食指
+        ];
+        
+        let petals = [];
+        
+        // 核心物理与视觉参数配置
+        const CONFIG = {
+            petalCount: 200,         // 密集樱花数量
+            baseSpeedY: 5.2,         // 落下的速度快
+            repulsionRadius: 55,     // 食指碰撞半径
+            damping: 0.93,           // 【有阻力的弹开】：空气阻力系数，反弹后速度会优雅细腻地平滑减速
+            bounceIntensity: 0.9,    // 弹开力度系数
+            minScale: 0.4,
+            maxScale: 1.3
+        };
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // 樱花粒子实体类
+        class Petal {
+            constructor(isInitial = false) {
+                this.reset(isInitial);
+            }
+
+            reset(isInitial = false) {
+                this.x = Math.random() * canvas.width;
+                this.y = isInitial ? Math.random() * canvas.height : -Math.random() * 60 - 20;
+                this.scale = Math.random() * (CONFIG.maxScale - CONFIG.minScale) + CONFIG.minScale;
+                this.speedY = (Math.random() * 2 + CONFIG.baseSpeedY) * this.scale * 0.7;
+                this.speedX = (Math.random() * 1.8 - 0.9);
+                
+                // 碰撞带来的物理附加速度向量
+                this.vx = 0;
+                this.vy = 0;
+
+                this.angle = Math.random() * Math.PI * 2;
+                this.spinSpeed = (Math.random() * 0.03 + 0.01) * (Math.random() > 0.5 ? 1 : -1);
+                
+                // 唯美通透的日系粉色
+                const r = 255;
+                const g = Math.floor(Math.random() * 25 + 180); 
+                const b = Math.floor(Math.random() * 20 + 200); 
+                const a = Math.random() * 0.4 + 0.45;           
+                this.color = `rgba(${r}, ${g}, ${b}, ${a})`;
+                this.bloomType = Math.floor(Math.random() * 3);
+            }
+
+            update() {
+                if (isPaused) {
+                    // 【五指张开暂停状态】：基础下落速度静止(x和y增量为0)，但依然保持并响应食指拨动的物理冲量
+                    this.vx *= CONFIG.damping;
+                    this.vy *= CONFIG.damping;
+                    this.x += this.vx;
+                    this.y += this.vy;
+                } else {
+                    // 正常快速下落：基础速度 + 物理碰撞冲量
+                    this.vx *= CONFIG.damping;
+                    this.vy *= CONFIG.damping;
+                    this.x += this.speedX + this.vx;
+                    this.y += this.speedY + this.vy;
+                    this.angle += this.spinSpeed;
+                }
+
+                // 【双手独立物理碰撞】：遍历当前所有活跃的食指，计算碰撞
+                activeFingers.forEach(finger => {
+                    if (finger.isActive) {
+                        const dx = this.x - finger.x;
+                        const dy = this.y - finger.y;
+                        const dist = Math.hypot(dx, dy);
+
+                        if (dist < CONFIG.repulsionRadius) {
+                            const angle = Math.atan2(dy, dx);
+                            const fingerSpeed = Math.hypot(finger.vx, finger.vy);
+                            // 根据手指划过的速度动态赋予花瓣冲量，实现细腻的“阻力滑行反弹”
+                            const pushForce = Math.max(fingerSpeed * CONFIG.bounceIntensity, 8);
+                            
+                            this.vx += Math.cos(angle) * pushForce * (1 - dist / CONFIG.repulsionRadius);
+                            this.vy += Math.sin(angle) * pushForce * (1 - dist / CONFIG.repulsionRadius);
+                            
+                            // 拨动时触发灵动水滴交互音效
+                            playInteractionTone(this.scale);
+                        }
+                    }
+                });
+
+                // 超出边界重置到画布上方
+                if (this.y > canvas.height + 20 || this.x < -20 || this.x > canvas.width + 20) {
+                    this.reset(false);
+                }
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.angle);
+                ctx.fillStyle = this.color;
+                
+                if (this.scale > 1.1) {
+                    ctx.shadowBlur = 6;
+                    ctx.shadowColor = 'rgba(255, 192, 203, 0.4)';
+                }
+
+                ctx.beginPath();
+                if (this.bloomType === 0) {
+                    // 心形/花瓣缺口形态
+                    ctx.moveTo(0, 0);
+                    ctx.bezierCurveTo(-10 * this.scale, -12 * this.scale, -15 * this.scale, 2 * this.scale, 0, 15 * this.scale);
+                    ctx.bezierCurveTo(15 * this.scale, 2 * this.scale, 10 * this.scale, -12 * this.scale, 0, 0);
+                } else if (this.bloomType === 1) {
+                    // 细长优雅形态
+                    ctx.ellipse(0, 0, 5 * this.scale, 12 * this.scale, 0, 0, Math.PI * 2);
+                } else {
+                    // 丰满水滴形态
+                    ctx.moveTo(0, -5 * this.scale);
+                    ctx.quadraticCurveTo(-12 * this.scale, 5 * this.scale, 0, 15 * this.scale);
+                    ctx.quadraticCurveTo(12 * this.scale, 5 * this.scale, 0, -5 * this.scale);
+                }
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+
+        function initPetals() {
+            petals = [];
+            for (let i = 0; i < CONFIG.petalCount; i++) {
+                petals.push(new Petal(true));
+            }
+        }
+
+        // 唯美声学空间实时合成器（零外部依赖，100%在手机端播放成功）
+        function initProceduralAudio() {
+            try {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                bgmGain = audioCtx.createGain();
+                bgmGain.gain.setValueAtTime(0.04, audioCtx.currentTime); // 优美柔和的背景风声
+                bgmGain.connect(audioCtx.destination);
+
+                const baseNotes = [130.81, 164.81, 196.00, 261.63]; // C大调唯美环境Pad和弦
+                baseNotes.forEach(f => {
+                    const osc = audioCtx.createOscillator();
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(f, audioCtx.currentTime);
+                    osc.connect(bgmGain);
+                    osc.start();
+                });
+            } catch (e) { console.log("Audio block bypass"); }
+        }
+
+        // 食指划过花瓣时的轻灵中式五声古典音阶反馈
+        let lastToneTime = 0;
+        function playInteractionTone(scale) {
+            if (!audioCtx || audioCtx.currentTime - lastToneTime < 0.06) return; 
+            lastToneTime = audioCtx.currentTime;
+
+            const pentatonic = [523.25, 587.33, 659.25, 783.99, 880.00, 1046.50]; 
+            const pitch = pentatonic[Math.floor(Math.random() * pentatonic.length)] * (1.35 - scale * 0.2);
+
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            
+            osc.type = 'triangle'; // 温润水滴质感
+            osc.frequency.setValueAtTime(pitch, audioCtx.currentTime);
+            
+            gain.gain.setValueAtTime(0.06, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.5); 
+
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.5);
+        }
+
+        // 核心动画循环
+        function renderLoop() {
+            // 暗雅的高级感底色
+            ctx.fillStyle = '#0f0a0d';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // 当摄像头就绪时，绘制低透明度背景，让用户能看清自己的双手控制屏幕
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                ctx.save();
+                ctx.translate(canvas.width, 0);
+                ctx.scale(-1, 1); // 开启水平镜像，符合左右直觉
+
+                const videoRatio = video.videoWidth / video.videoHeight;
+                const canvasRatio = canvas.width / canvas.height;
+                let dWidth, dHeight, sx = 0, sy = 0;
+
+                if (canvasRatio > videoRatio) {
+                    dWidth = canvas.width;
+                    dHeight = canvas.width / videoRatio;
+                    sy = (canvas.height - dHeight) / 2;
+                } else {
+                    dWidth = canvas.height * videoRatio;
+                    dHeight = canvas.height;
+                    sx = (canvas.width - dWidth) / 2;
+                }
+
+                // 【背景透明度低】：调低画面整体不透明度，既显高级又不易被杂乱现实背景干扰视觉
+                ctx.globalAlpha = 0.24; 
+                ctx.drawImage(video, sx, sy, dWidth, dHeight);
+                ctx.restore();
+            }
+
+            // 【清新唯美色彩滤镜罩层】
+            const filterOverlay = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            filterOverlay.addColorStop(0, 'rgba(255, 228, 235, 0.15)');
+            filterOverlay.addColorStop(1, 'rgba(228, 238, 255, 0.12)');
+            ctx.fillStyle = filterOverlay;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // 更新并渲染全屏密集落樱
+            for (let i = 0; i < petals.length; i++) {
+                petals[i].update();
+                petals[i].draw();
+            }
+
+            // 渲染所有活跃食指的视觉外发光圆环
+            activeFingers.forEach(finger => {
+                if (finger.isActive) {
+                    ctx.save();
+                    ctx.shadowBlur = 25;
+                    ctx.shadowColor = 'rgba(255, 183, 197, 0.9)';
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+                    ctx.beginPath();
+                    ctx.arc(finger.x, finger.y, 8, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    ctx.strokeStyle = 'rgba(255, 183, 197, 0.35)';
+                    ctx.lineWidth = 1.5;
+                    ctx.beginPath();
+                    ctx.arc(finger.x, finger.y, CONFIG.repulsionRadius, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.restore();
+                }
+            });
+
+            // 艺术态 UI 文字提示
+            if (isPaused) {
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                ctx.font = "300 13px sans-serif";
+                ctx.textAlign = "center";
+                ctx.letterSpacing = "4px";
+                ctx.fillText("「 一手定格时空 ‧ 另一手落樱拨弄 」", canvas.width / 2, canvas.height - 60);
+            }
+
+            requestAnimationFrame(renderLoop);
+        }
+
+        // 核心手势流多点映射追踪数据处理器
+        function onHandResults(results) {
+            if (statusBar.style.opacity === "0") statusBar.style.opacity = "1";
+
+            // 先重置两只手食指的活跃标记
+            activeFingers[0].isActive = false;
+            activeFingers[1].isActive = false;
+
+            if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+                isPaused = false;
+                statusBar.innerText = "画面中未检测到手势";
+                return;
+            }
+
+            statusBar.innerText = `精准捕捉中 (${results.multiHandLandmarks.length}只手)`;
+
+            let globalPauseTrigger = false;
+
+            // 遍历检测到的每一只手（最多2只）
+            results.multiHandLandmarks.forEach((landmarks, index) => {
+                if (index > 1) return; // 超过2只手则不予计算，确保手机运行效率
+                
+                let finger = activeFingers[index];
+
+                // 1. 食指尖坐标计算 (Landmark 8)
+                const rawX = landmarks[8].x * canvas.width;
+                const rawY = landmarks[8].y * canvas.height;
+                const mappedX = canvas.width - rawX; // 水平镜像折算
+                const mappedY = rawY;
+
+                if (!finger.isActive) {
+                    finger.x = mappedX; finger.y = mappedY;
+                    finger.lastX = mappedX; finger.lastY = mappedY;
+                    finger.vx = 0; finger.vy = 0;
+                    finger.isActive = true;
+                } else {
+                    finger.lastX = finger.x;
+                    finger.lastY = finger.y;
+                    finger.x = mappedX;
+                    finger.y = mappedY;
+                    // 计算出当前手移动的瞬时速度向量，用于物理反弹推力
+                    finger.vx = finger.x - finger.lastX;
+                    finger.vy = finger.y - finger.lastY;
+                    finger.isActive = true;
+                }
+
+                // 2. 五指张开开合判断算法
+                const wrist = landmarks[0];
+                const tips = [4, 8, 12, 16, 20];
+                const bases = [1, 5, 9, 13, 17];
+                
+                let openCount = 0;
+                for (let i = 0; i < 5; i++) {
+                    const tipDist = Math.hypot(landmarks[tips[i]].x - wrist.x, landmarks[tips[i]].y - wrist.y);
+                    const baseDist = Math.hypot(landmarks[bases[i]].x - wrist.x, landmarks[bases[i]].y - wrist.y);
+                    if (tipDist > baseDist * 1.38) {
+                        openCount++;
+                    }
+                }
+                
+                // 只要当前这只手满足张开4根及以上手指，便视作开启暂停机制
+                if (openCount >= 4) {
+                    globalPauseTrigger = true;
+                }
+            });
+
+            // 只要任何一只手张开五指，立刻进入暂停；与此同时，另一只没有张开的手（或者两只手）仍能快乐地拨动樱花
+            isPaused = globalPauseTrigger;
+        }
+
+        // 初始化一键入口
+        function initSystem() {
+            startBtn.style.display = 'none';
+            loader.style.display = 'block';
+            statusBar.style.opacity = '1';
+            statusBar.innerText = "获取手机摄像头权限中...";
+
+            initProceduralAudio();
+            initPetals();
+
+            hands = new Hands({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+            });
+
+            // 修改配置以支持双手实时协同操作
+            hands.setOptions({
+                maxNumHands: 2,             // 【核心修改】：开启双手追踪能力
+                modelComplexity: 1,         // 移动芯片自适应算力均衡模型
+                minDetectionConfidence: 0.6,
+                minTrackingConfidence: 0.6
+            });
+
+            hands.onResults(onHandResults);
+
+            // 绑定并适配全面屏流媒体
+            camera = new Camera(video, {
+                onFrame: async () => {
+                    await hands.send({ image: video });
+                },
+                width: 640,
+                height: 480
+            });
+
+            camera.start()
+                .then(() => {
+                    overlay.style.opacity = '0';
+                    setTimeout(() => overlay.style.display = 'none', 1200);
+                    renderLoop();
+                })
+                .catch(err => {
+                    alert("无法拉起镜头，请确保在浏览器设置中开启了摄像头使用权限。原因: " + err);
+                    startBtn.style.display = 'block';
+                    loader.style.display = 'none';
+                    statusBar.innerText = "加载失败";
+                });
+        }
+    </script>
+</body>
+</html>
